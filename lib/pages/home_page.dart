@@ -4,6 +4,10 @@ import 'package:intl/intl.dart';
 import '../utils/storage_helper.dart';
 import 'add_reminder_page.dart';
 import 'package:timezone/timezone.dart' as tz;
+import '../utils/theme_provider.dart';
+import 'package:provider/provider.dart';
+import 'dart:async';
+import 'package:audioplayers/audioplayers.dart';
 
 class HomePage extends StatefulWidget {
   final FlutterLocalNotificationsPlugin notifPlugin;
@@ -14,14 +18,26 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+
   List<Map<String, dynamic>> reminders = [];
   String _userName = '';
+  Set<String> _shownAlerts = {};
+  Timer? _timer;
 
   @override
   void initState() {
     super.initState();
-    loadReminders();
+    Future.microtask(() async {
+      await loadReminders(); // Tunggu dulu reminders selesai dimuat
+      _startScheduleChecker();
+    });
     loadUserName();
+  }
+
+
+  void dispose() {
+    _timer?.cancel(); // Hentikan timer saat halaman dibuang
+    super.dispose();
   }
 
   Future<void> loadUserName() async {
@@ -29,6 +45,12 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _userName = name ?? '';
     });
+  }
+
+  final AudioPlayer _audioPlayer = AudioPlayer();
+
+  Future<void> _playAlarmSound() async {
+    await _audioPlayer.play(AssetSource('sounds/alarm.mp3'));
   }
 
   Future<void> loadReminders() async {
@@ -53,6 +75,59 @@ class _HomePageState extends State<HomePage> {
       reminders.removeAt(index);
       saveReminders();
     });
+  }
+
+  void _startScheduleChecker() {
+    _timer = Timer.periodic(Duration(minutes: 1), (timer) {
+      final now = DateTime.now();
+
+      for (var reminder in reminders) {
+        final title = reminder['title'] ?? '';
+        final timeStr = reminder['time'] ?? '';
+        if (!_shownAlerts.contains(title)) {
+          try {
+            final reminderTime = DateTime.parse(timeStr);
+            if (_isSameMinute(now, reminderTime)) {
+              _shownAlerts.add(title); // Gunakan title sebagai ID unik
+              _showAlert(title);
+            }
+          } catch (e) {
+            // ignore format error
+          }
+        }
+      }
+    });
+  }
+
+  bool _isSameMinute(DateTime a, DateTime b) {
+    return a.year == b.year &&
+        a.month == b.month &&
+        a.day == b.day &&
+        a.hour == b.hour &&
+        a.minute == b.minute;
+  }
+
+  void _showAlert(String title) async {
+    await _playAlarmSound(); // Putar alarm
+
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text("Pengingat Jadwal"),
+        content: Text("Saatnya untuk: $title"),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _audioPlayer.stop(); // Stop suara saat user tekan OK
+              Navigator.of(context).pop();
+            },
+            child: Text("OK"),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> scheduleNotification(String title, String time) async {
@@ -92,12 +167,13 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
-      backgroundColor: Color(0xFF1C1C1E),
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: PreferredSize(
         preferredSize: Size.fromHeight(kToolbarHeight),
         child: AppBar(
-          backgroundColor: Colors.black,
+          backgroundColor: theme.appBarTheme.backgroundColor ?? theme.primaryColor,
           automaticallyImplyLeading: false,
           flexibleSpace: SafeArea(
             child: Row(
@@ -114,11 +190,7 @@ class _HomePageState extends State<HomePage> {
                   child: Center(
                     child: Text(
                       'Daftar Pengingat',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+                      style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
                     ),
                   ),
                 ),
@@ -126,7 +198,7 @@ class _HomePageState extends State<HomePage> {
                   padding: const EdgeInsets.only(right: 12.0),
                   child: Builder(
                     builder: (context) => IconButton(
-                      icon: Icon(Icons.menu, color: Colors.white),
+                      icon: Icon(Icons.menu),
                       onPressed: () {
                         Scaffold.of(context).openEndDrawer();
                       },
@@ -142,68 +214,86 @@ class _HomePageState extends State<HomePage> {
         child: ListView(
           padding: EdgeInsets.zero,
           children: [
-            DrawerHeader(
-              decoration: BoxDecoration(color: Colors.black),
+            Container(
+              height: 100, // mengatur height menu
+              padding: EdgeInsets.symmetric(horizontal: 16.0),
+              color: Theme.of(context).colorScheme.primary,
+              alignment: Alignment.centerLeft,
               child: Text(
                 'Menu',
-                style: TextStyle(color: Colors.white, fontSize: 24),
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: Colors.white,
+                ),
               ),
             ),
-            ListTile(
-              leading: Icon(Icons.settings),
-              title: Text('Pengaturan'),
-              onTap: () {
-                Navigator.pop(context);
-              },
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10.0),
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: Icon(Icons.home),
+                    title: Text('Home'),
+                    onTap: () {
+                      Navigator.pop(context);
+                    },
+                  ),
+                  Consumer<ThemeProvider>(
+                    builder: (context, themeProvider, _) {
+                      return SwitchListTile(
+                        title: Text("Mode Gelap"),
+                        value: themeProvider.isDarkMode,
+                        onChanged: (value) {
+                          themeProvider.toggleTheme(value);
+                        },
+                        secondary: Icon(Icons.brightness_6),
+                      );
+                    },
+                  ),
+                ],
+              ),
             ),
           ],
         ),
       ),
+
       body: ListView(
         children: <Widget>[
           Padding(
-            padding: const EdgeInsets.all(5.0),
+            padding: const EdgeInsets.only(left: 20, top: 10),
             child: Text(
               'Hello, $_userName',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Colors.blue[200],
-              ),
+              style: theme.textTheme.titleLarge?.copyWith(color: Colors.blue[200]),
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(16.0),
+            padding: const EdgeInsets.only(left: 20),
             child: Text(
               'Siap Memulai Hari Mu ?',
-              style: TextStyle(
-                fontSize: 10,
-                color: Colors.white,
-              ),
+              style: theme.textTheme.bodySmall,
             ),
           ),
           ...reminders.asMap().entries.map((entry) {
             final index = entry.key;
             final reminder = entry.value;
             return Card(
-              color: Colors.grey[850],
+              color: theme.cardColor,
               elevation: 5,
               margin: EdgeInsets.all(10),
               child: ListTile(
                 title: Text(
                   reminder['title'] ?? 'Tanpa Judul',
-                  style: TextStyle(color: Colors.white),
+                  style: theme.textTheme.bodyLarge,
                 ),
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       reminder['description'] ?? 'Tanpa Deskripsi',
-                      style: TextStyle(color: Colors.white),
+                      style: theme.textTheme.bodyMedium,
                     ),
                     Text(
                       formatDateTime(reminder['time'] ?? ''),
-                      style: TextStyle(color: Colors.white70),
+                      style: theme.textTheme.bodySmall,
                     ),
                   ],
                 ),
@@ -235,15 +325,9 @@ class _HomePageState extends State<HomePage> {
                     showDialog(
                       context: context,
                       builder: (context) => AlertDialog(
-                        backgroundColor: Colors.blue[200],
-                        title: Text(
-                          'Hapus Pengingat',
-                          style: TextStyle(color: Colors.white),
-                        ),
-                        content: Text(
-                          'Yakin ingin menghapus pengingat ini?',
-                          style: TextStyle(color: Colors.white70),
-                        ),
+                        backgroundColor: theme.dialogBackgroundColor,
+                        title: Text('Hapus Pengingat'),
+                        content: Text('Yakin ingin menghapus pengingat ini?'),
                         actions: [
                           TextButton(
                             onPressed: () => Navigator.pop(context),
@@ -277,7 +361,7 @@ class _HomePageState extends State<HomePage> {
           }
         },
         child: Icon(Icons.add),
-        backgroundColor: Colors.deepPurple,
+        backgroundColor: theme.floatingActionButtonTheme.backgroundColor ?? Colors.deepPurple,
       ),
     );
   }
